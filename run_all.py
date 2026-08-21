@@ -18,7 +18,7 @@ def run(cmd: list[str]) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run the three real-data applications in the final manuscript.")
+    parser = argparse.ArgumentParser(description="Run the three real-data applications.")
     parser.add_argument("--refresh-data", action="store_true", help="Redownload automatically fetched datasets.")
     parser.add_argument("--rwth-file", type=Path, default=None, help="Optional existing LP02_Whitenoise_001.csv.")
     parser.add_argument("--rwth-dataset-url", default=None, help="Optional direct RWTH Data_v1.0.0.zip URL.")

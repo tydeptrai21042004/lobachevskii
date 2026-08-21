@@ -13,7 +13,7 @@ RWTH_EXPECTED_SAMPLES = 40131
 RWTH_NPERSEG = 4096
 RWTH_BAND_HZ = (0.2, 50.0)
 
-# Values printed in the final manuscript. They are comparison targets, not hard-coded outputs.
+# Values reported in the manuscript. They are comparison targets, not hard-coded outputs.
 RWTH_MANUSCRIPT_TARGETS = {
     "dominant_response_frequency_hz": 3.2552,
     "acceleration_transfer_norm": 12.6212,

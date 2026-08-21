@@ -1,6 +1,6 @@
 
 
-This repository is aligned to the final manuscript **Interaction Kernels and Weighted Convolution Bounds in Discrete Dynamics: Wave Response, Graph Source Recovery, and Causal Memory**.
+This repository reproduces the numerical evaluations for **Interaction Kernels and Weighted Convolution Bounds in Discrete Dynamics: Wave Response, Graph Source Recovery, and Causal Memory**.
 
 
 ## Applications
@@ -101,9 +101,9 @@ python scripts/run_graph_etex.py
 
 The official JRC ETEX-I files are downloaded from the JRC ETEX Release 1 archive. The graph uses a symmetric geographic 5-nearest-neighbour construction with Gaussian distance weights.
 
-### No theory change
+### Empirical indexing
 
-The theoretical initialization stays exactly `W0=W1=Id`. For the **real-data comparison only**, the selected data window is mapped to
+The graph recurrence uses `W0=W1=Id`. For the **ETEX real-data comparison**, the selected data window is mapped to
 
 ```text
 W2, W3, W4, ...
@@ -122,7 +122,7 @@ Methods:
 3. multi-time polynomial-wave matching with post-propagation states only;
 4. Peña–Bresson–Vandergheynst heat-kernel + L1 source-localization baseline.
 
-After this correction, rerun the ETEX script and use the newly generated values in the manuscript application table. The theorem itself does not need to change.
+The ETEX script writes the resulting station estimates, geographic errors, hop errors, and run metadata to `outputs/graph_etex/`.
 
 ---
 
@@ -141,6 +141,8 @@ mu = 0.5 fixed
 omega = 2 fixed
 fitted memory parameters = beta, gamma only
 ```
+
+All three trajectories use the first observed in-bed count as the initial infected count: `S0=760/763`, `I0=3/763`, `R0=0`. The two fitted models minimize unweighted residuals in the 14 daily in-bed counts using `scipy.optimize.least_squares`, initialized at the published SIR parameter pair, with bounds `0.02 <= beta <= 10` and `0.02 <= gamma <= 5`.
 
 For the real-data Hartley-memory fit, the one-sided causal kernel is normalized to unit mass,
 
@@ -190,7 +192,6 @@ The tests check, without network access:
 
 ```text
 README.md
-CORRECTIONS.md
 requirements.txt
 run_all.py
 scripts/
@@ -213,4 +214,4 @@ tests/
 - RWTH Aachen steel-frame dataset: Lenzen et al., Zenodo DOI `10.5281/zenodo.10134011`.
 - ETEX-I: van Dop et al. (1998), *Atmospheric Environment* 32(24), 4089–4094.
 - Graph baseline: Peña, Bresson & Vandergheynst (2016), IEEE IVMSP Workshop, DOI `10.1109/IVMSPW.2016.7528230`.
-- Boarding-school influenza: Anonymous (1978), *British Medical Journal* 1:578; classical parameter benchmark from Keeling & Rohani.
+- Boarding-school influenza: Anonymous (1978), *British Medical Journal* 1:587; the code uses the commonly digitized 14-point series distributed by the `outbreaks` project, with the classical parameter benchmark from Keeling & Rohani.

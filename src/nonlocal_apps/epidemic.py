@@ -118,8 +118,7 @@ def hartley_causal_kernel(
     """Mass-normalized one-sided Hartley-generated kernel.
 
     The exact infinite one-sided mass is used for normalization, so dt*sum(K_j) -> 1
-    as n_terms increases. This removes the causal-mass confounding present in the old
-    synthetic comparison.
+    as n_terms increases. This removes multiplicative confounding between the kernel amplitude and beta.
     """
     if dt <= 0 or mu <= 0 or omega <= 0 or n_terms < 1:
         raise ValueError("dt, mu, omega and n_terms must be positive.")

@@ -10,6 +10,7 @@ from nonlocal_apps.epidemic import (
     hartley_multiplier_direct_sum,
     hartley_spectral_verification,
     paper_sir_baseline,
+    result_table,
     simulate_hartley_memory,
 )
 
@@ -56,3 +57,28 @@ def test_published_sir_baseline_accepts_canonical_shape():
     assert fit.beta == PAPER_BETA_PER_DAY
     assert fit.gamma == PAPER_GAMMA_PER_DAY
     assert fit.predicted_infected.shape == (14,)
+
+
+
+def test_canonical_boarding_school_fit_values_match_manuscript():
+    dates = pd.date_range("1978-01-22", periods=14, freq="D")
+    in_bed = np.array([3, 8, 26, 76, 225, 298, 258, 233, 189, 128, 68, 29, 14, 4])
+    convalescent = np.array([0, 0, 0, 0, 9, 17, 105, 162, 176, 166, 150, 85, 47, 20])
+    df = pd.DataFrame({"date": dates, "in_bed": in_bed, "convalescent": convalescent})
+    table, _ = result_table(df)
+
+    published = table.iloc[0]
+    refit = table.iloc[1]
+    memory = table.iloc[2]
+    assert abs(published.beta_per_day - 1.6600) < 5e-8
+    assert abs(published.gamma_per_day - 0.45454545) < 5e-8
+    assert abs(published.rmse_in_bed - 18.4784593) < 5e-6
+    assert abs(published.mae_in_bed - 15.6603525) < 5e-6
+    assert abs(refit.beta_per_day - 1.6997994) < 5e-6
+    assert abs(refit.gamma_per_day - 0.4468659) < 5e-6
+    assert abs(refit.rmse_in_bed - 16.6354984) < 5e-6
+    assert abs(refit.mae_in_bed - 14.5517648) < 5e-6
+    assert abs(memory.beta_per_day - 4.3860122) < 5e-6
+    assert abs(memory.gamma_per_day - 0.4987717) < 5e-6
+    assert abs(memory.rmse_in_bed - 28.0771523) < 5e-6
+    assert abs(memory.mae_in_bed - 19.0417543) < 5e-6

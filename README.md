@@ -1,19 +1,7 @@
-# Reproducible code for the final manuscript
+
 
 This repository is aligned to the final manuscript **Interaction Kernels and Weighted Convolution Bounds in Discrete Dynamics: Wave Response, Graph Source Recovery, and Causal Memory**.
 
-It is intentionally code-only: datasets are downloaded at runtime into `.cache/datasets/`, and generated CSV/JSON/PNG outputs are written to `outputs/`.
-
-## Important correction policy
-
-The mathematical theory is **not changed** by this code revision. In particular, the graph recurrence remains
-
-```text
-W0 = Id,  W1 = Id,
-W(j+1) = 2(Id - tau_G^2 L/2) Wj - W(j-1).
-```
-
-The only graph correction is experimental: ETEX matching excludes the initialization states `W0` and `W1` and uses only genuinely propagated states `Wj`, `j >= 2`.
 
 ## Applications
 

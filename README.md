@@ -1,23 +1,27 @@
-# Three real-data application benchmarks — code only
+# Reproducible code for the final manuscript
 
-This folder is intentionally **code-only**. It contains no manuscript LaTeX/PDF, no figures, no pre-downloaded datasets, and no precomputed outputs.
+This repository is aligned to the final manuscript **Interaction Kernels and Weighted Convolution Bounds in Discrete Dynamics: Wave Response, Graph Source Recovery, and Causal Memory**.
 
-At runtime the scripts create:
+It is intentionally code-only: datasets are downloaded at runtime into `.cache/datasets/`, and generated CSV/JSON/PNG outputs are written to `outputs/`.
 
-- `.cache/datasets/` — automatically downloaded source data;
-- `outputs/` — generated CSV/JSON/PNG results.
+## Important correction policy
 
-Both directories can be deleted safely and are not required to distribute the code.
+The mathematical theory is **not changed** by this code revision. In particular, the graph recurrence remains
+
+```text
+W0 = Id,  W1 = Id,
+W(j+1) = 2(Id - tau_G^2 L/2) Wj - W(j-1).
+```
+
+The only graph correction is experimental: ETEX matching excludes the initialization states `W0` and `W1` and uses only genuinely propagated states `Wj`, `j >= 2`.
 
 ## Applications
 
-| Application | Real dataset | Manuscript-side experiment | Paper-derived baseline |
-|---|---|---|---|
-| Mechanical | LANL three-story frame | measured force → acceleration H1 FRF / frequency-response validation | transmissibility-coherence implementation used with the LANL frame literature |
-| Graph source recovery | **ETEX-I European Tracer Experiment** | single-time vs multi-time polynomial-wave source matching on real tracer snapshots | Peña, Bresson & Vandergheynst (2016), heat-kernel + L1 source localization |
-| Epidemic memory | 1978 English boarding-school influenza | mass-normalized Hartley causal-memory SIR fit | classical SIR with published boarding-school parameter pair |
-
-ETEX-I supplies real monitoring locations, real tracer measurements, multiple three-hour observation times, and a known physical release location.
+| Application | Dataset | What the code reproduces |
+|---|---|---|
+| Mechanical | **RWTH Aachen two-storey steel-frame shaking-table data** | NN/NNN analytical numbers, isolation-design numbers, RWTH white-noise Welch/H1 response summary and response figure |
+| Graph source recovery | **ETEX-I** | peak heuristic, single-time wave, multi-time wave using only `j>=2`, and Peña et al. heat-kernel + L1 baseline |
+| Epidemic memory | **1978 English boarding-school influenza** | published SIR baseline, two-parameter SIR refit, mass-normalized Hartley-memory fit, and Hartley multiplier numerical verification |
 
 ## Install
 
@@ -37,46 +41,69 @@ pip install -r requirements.txt
 python run_all.py
 ```
 
-Force a fresh download:
+Force fresh downloads:
 
 ```bash
 python run_all.py --refresh-data
 ```
 
-Run unit tests too:
+Run unit tests after all applications:
 
 ```bash
 python run_all.py --run-tests
 ```
 
-## 1. Mechanical — LANL three-story frame
+The default run never silently substitutes synthetic data when a public dataset download fails.
+
+---
+
+## 1. Mechanical — RWTH Aachen two-storey steel frame
 
 ```bash
-python scripts/run_mechanical_lanl.py
+python scripts/run_mechanical_rwth.py
 ```
 
-The script first tries to discover the current download from the official LANL SHM data/software page and caches the archive locally. LANL has changed its dataset URLs historically, so two explicit fallbacks are supported without editing code:
+The script downloads the official Zenodo record DOI `10.5281/zenodo.10134011`, verifies the published MD5 checksum for `Data_v1.0.0.zip`, and extracts only:
+
+```text
+LP02_Whitenoise_001.csv
+```
+
+The expected columns are:
+
+```text
+Time, Acc_0, Acc_1, Acc_2, Disp_0, Disp_1, Disp_2
+```
+
+with `dt = 0.003 s`. The measured table channels (`Acc_0`, `Disp_0`) are inputs and the first/second-floor channels are responses. Welch/H1 estimation uses `nperseg=4096`, 50% overlap, and the manuscript band `0.2–50 Hz`.
+
+You can use an existing local CSV:
 
 ```bash
-python scripts/run_mechanical_lanl.py --dataset-url "DIRECT_ARCHIVE_URL"
+python scripts/run_mechanical_rwth.py --rwth-file path/to/LP02_Whitenoise_001.csv
 ```
 
-or
+or a direct archive URL if Zenodo routing changes:
 
 ```bash
-export LANL_THREE_STORY_URL="DIRECT_ARCHIVE_URL"
-python scripts/run_mechanical_lanl.py
+python scripts/run_mechanical_rwth.py --dataset-url "DIRECT_DATA_V1_ZIP_URL"
 ```
 
-If you already have a LANL five-channel record:
+Generated outputs include:
 
-```bash
-python scripts/run_mechanical_lanl.py --lanl-file path/to/record.mat
+```text
+outputs/mechanical_rwth/
+  rwth_summary.json
+  rwth_manuscript_comparison.json
+  fig_app_rwth_response.png
+  lattice_band_edges.csv
+  lattice_design_numbers.json
+  fig_main_dispersion.png
 ```
 
-Expected signal order is force, base acceleration, floor-1 acceleration, floor-2 acceleration, floor-3 acceleration. Supported local formats are MAT, CSV, TXT/DAT, NPY and NPZ.
+A synthetic RWTH-shaped fixture exists only for unit/CI testing and can be run explicitly with `--demo-fixture`; it is never used by the default real-data run.
 
-A synthetic fixture remains only inside the code for unit/smoke testing and is never used by the default real-data run.
+---
 
 ## 2. Graph source recovery — ETEX-I
 
@@ -84,28 +111,32 @@ A synthetic fixture remains only inside the code for unit/smoke testing and is n
 python scripts/run_graph_etex.py
 ```
 
-The script automatically downloads the official JRC ETEX-I files from:
+The official JRC ETEX-I files are downloaded from the JRC ETEX Release 1 archive. The graph uses a symmetric geographic 5-nearest-neighbour construction with Gaussian distance weights.
 
-`https://remon.jrc.ec.europa.eu/past_activities/etex/site/database/ETEX_release1/`
+### No theory change
 
-Required files are `stationlist.950130` and `pmch.dat`; metadata files are cached when available.
+The theoretical initialization stays exactly `W0=W1=Id`. For the **real-data comparison only**, the selected data window is mapped to
 
-The graph is built from real monitoring-station coordinates using a symmetric geographic k-nearest-neighbour graph with Gaussian edge weights. Default:
-
-```bash
-python scripts/run_graph_etex.py --k 5
+```text
+W2, W3, W4, ...
 ```
 
-The known ETEX-I source is Monterfil, Brittany, approximately latitude `48.0583`, longitude `-2.0083`. Because the manuscript theorem assumes the source is a graph node while the real release point is not necessarily a monitoring station, evaluation reports both geographic distance to the physical release and graph-hop distance to the nearest monitoring-station proxy.
+rather than `W1, W2, W3, ...`. This prevents the multi-time empirical matcher from receiving the unpropagated identity dictionary as one of its inputs.
 
-The real ETEX concentration field is atmospheric-diffusion data, not data generated by the manuscript wave recurrence. Therefore the code uses scale-robust cosine matching for the wave dictionary and **does not claim that the deterministic bounded-noise theorem applies to this model-mismatch real-data experiment**.
+The single-time wave comparator uses the propagated index aligned with the peak ETEX snapshot inside the same selected data window.
 
-Methods reported:
+ETEX is atmospheric-transport data, not wave-generated data. Therefore wave matching remains cosine-normalized and the deterministic bounded-noise theorem is not claimed for this model-mismatch experiment.
+
+Methods:
 
 1. peak-concentration heuristic;
-2. manuscript single-time polynomial-wave matching;
-3. manuscript multi-time polynomial-wave matching;
+2. single-time polynomial-wave matching;
+3. multi-time polynomial-wave matching with post-propagation states only;
 4. Peña–Bresson–Vandergheynst heat-kernel + L1 source-localization baseline.
+
+After this correction, rerun the ETEX script and use the newly generated values in the manuscript application table. The theorem itself does not need to change.
+
+---
 
 ## 3. Epidemic memory — 1978 boarding-school influenza
 
@@ -113,22 +144,69 @@ Methods reported:
 python scripts/run_epidemic_boarding_school.py
 ```
 
-The 14-day public outbreak table is downloaded automatically and cached. The code compares:
+The code uses:
 
-1. classical SIR with the published parameter pair `beta = 1.66 day^-1`, infectious period `1/gamma = 2.2 days`;
-2. a two-parameter classical SIR refit;
-3. the mass-normalized Hartley causal-memory model with `mu=0.5` and `omega=2` fixed while fitting only `beta` and `gamma`.
+```text
+population = 763
+memory integration step h = 0.1 day
+mu = 0.5 fixed
+omega = 2 fixed
+fitted memory parameters = beta, gamma only
+```
 
-The one-sided Hartley kernel is normalized so that its causal mass is 1, avoiding the mass-confounding problem in the earlier synthetic comparison.
+For the real-data Hartley-memory fit, the one-sided causal kernel is normalized to unit mass,
+
+```text
+h * sum(K_j) = 1,
+```
+
+so the kernel amplitude is not independently fitted and is not confounded with `beta`.
+
+The same script also independently reproduces the manuscript's two-sided Hartley spectral check with `alpha=1`, including direct-sum versus closed-form agreement, maximum frequency asymmetry, and maximum multiplier.
+
+Generated outputs include:
+
+```text
+outputs/epidemic/
+  boarding_school_model_comparison.csv
+  boarding_school_predictions.csv
+  epidemic_metadata.json
+  hartley_spectral_verification.json
+  fig_app_boarding_fit.png
+  fig_main_memory_spectrum.png
+```
+
+---
+
+## Tests
+
+```bash
+PYTHONPATH=src python -m pytest -q
+```
+
+The tests check, without network access:
+
+- the manuscript NN/NNN band-edge values;
+- the two reported group velocities;
+- the isolation threshold and maximum gains;
+- RWTH spectral-processing logic on a synthetic fixture;
+- preservation of the theoretical graph initialization `W0=W1=Id`;
+- exclusion of `W0,W1` from the ETEX empirical matcher;
+- graph stability and the Peña baseline solver;
+- causal-kernel nonnegativity and unit-mass normalization;
+- simplex preservation and positivity-step validation;
+- Hartley direct-sum/closed-form agreement;
+- the reported Hartley asymmetry and multiplier maxima.
 
 ## Code layout
 
 ```text
 README.md
+CORRECTIONS.md
 requirements.txt
 run_all.py
 scripts/
-  run_mechanical_lanl.py
+  run_mechanical_rwth.py
   run_graph_etex.py
   run_epidemic_boarding_school.py
 src/nonlocal_apps/
@@ -142,13 +220,9 @@ tests/
   test_epidemic.py
 ```
 
-## Literature / dataset support
+## Public sources
 
-- LANL three-story SHM structure: Figueiredo et al., *Structural Health Monitoring Algorithm Comparisons Using Standard Data Sets*, LANL report, 2009. Current LANL SHM data/software page is referenced by later studies as the public download location.
-- ETEX: Van Dop et al. (1998), “ETEX: A European tracer experiment; observations, dispersion modelling and emergency response,” *Atmospheric Environment* 32(24), 4089–4094. ETEX-I used 168 sampling stations and three-hour concentration measurements.
-- Graph baseline: Peña, Bresson & Vandergheynst (2016), “Source Localization on Graphs via l1 Recovery and Spectral Graph Theory,” IEEE IVMSP Workshop, DOI: 10.1109/IVMSPW.2016.7528230.
-- Boarding-school data: Anonymous (1978), “Influenza in a boarding school,” *British Medical Journal* 1:578; public 14-row table distributed in the `outbreaks` dataset collection.
-
-## Important reproducibility rule
-
-Nothing in this package silently substitutes synthetic data for a failed real-data download. If a required public host changes, the script fails with a clear error. For LANL only, `--dataset-url` / `LANL_THREE_STORY_URL` is provided because the official hosting path has historically moved.
+- RWTH Aachen steel-frame dataset: Lenzen et al., Zenodo DOI `10.5281/zenodo.10134011`.
+- ETEX-I: van Dop et al. (1998), *Atmospheric Environment* 32(24), 4089–4094.
+- Graph baseline: Peña, Bresson & Vandergheynst (2016), IEEE IVMSP Workshop, DOI `10.1109/IVMSPW.2016.7528230`.
+- Boarding-school influenza: Anonymous (1978), *British Medical Journal* 1:578; classical parameter benchmark from Keeling & Rohani.

@@ -12,6 +12,7 @@ from scipy.optimize import minimize_scalar
 
 ETEX_SOURCE_LAT = 48.0583
 ETEX_SOURCE_LON = -2.0083
+POST_PROPAGATION_START = 2
 
 
 @dataclass(frozen=True)
@@ -439,9 +440,13 @@ def evaluate_etex_i(
     if len(multi_times_data) < 2:
         multi_times_data = tuple(nonzero[: min(3, len(nonzero))].tolist())
 
-    # Propagator indices are relative snapshots in the selected real-data window.
-    single_wave_t = max(1, len(multi_times_data))
-    multi_wave_times = tuple(range(1, len(multi_times_data) + 1))
+    # Preserve the manuscript recurrence W_0=W_1=Id, but exclude those initialization
+    # states from the real-data comparison.  Each ETEX snapshot is matched only to a
+    # genuinely propagated state W_j with j >= 2.  The single-time matcher uses the
+    # propagator index aligned with the real peak snapshot inside the same window.
+    multi_wave_times = tuple(range(POST_PROPAGATION_START, POST_PROPAGATION_START + len(multi_times_data)))
+    peak_position = multi_times_data.index(peak_t) if peak_t in multi_times_data else len(multi_times_data) // 2
+    single_wave_t = multi_wave_times[peak_position]
     model = build_wave_model(g, max_time=max(multi_wave_times), safety_factor=wave_safety_factor)
 
     y_single = _snapshot_normalize(data.concentrations[:, peak_t])
@@ -498,6 +503,8 @@ def evaluate_etex_i(
         "peak_snapshot_index": peak_t,
         "multi_snapshot_indices": list(multi_times_data),
         "wave_propagator_times": list(multi_wave_times),
+        "single_wave_propagator_time": single_wave_t,
+        "initialization_propagators_excluded_from_real_data_matching": [0, 1],
         "nu_dt": model.nu_dt,
         "stability_value": float(model.nu_dt**2 * np.linalg.eigvalsh(model.laplacian)[-1]),
         "alpha_multi": modal_alpha(model, multi_wave_times),

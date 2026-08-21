@@ -13,6 +13,9 @@ PAPER_BETA_PER_DAY = 1.66
 PAPER_INFECTIOUS_PERIOD_DAYS = 2.2
 PAPER_GAMMA_PER_DAY = 1.0 / PAPER_INFECTIOUS_PERIOD_DAYS
 PAPER_R0 = PAPER_BETA_PER_DAY / PAPER_GAMMA_PER_DAY
+MEMORY_DT_DAYS = 0.1
+MEMORY_MU = 0.5
+MEMORY_OMEGA = 2.0
 
 
 @dataclass(frozen=True)
@@ -138,14 +141,20 @@ def simulate_hartley_memory(
     n_days: int,
     infected0: float = 3.0,
     population: int = POPULATION,
-    dt: float = 0.1,
-    mu: float = 0.5,
-    omega: float = 2.0,
+    dt: float = MEMORY_DT_DAYS,
+    mu: float = MEMORY_MU,
+    omega: float = MEMORY_OMEGA,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Explicit Euler-Volterra SIR with a unit-mass causal Hartley-generated kernel."""
+    if beta < 0 or gamma <= 0:
+        raise ValueError("beta must be nonnegative and gamma must be positive.")
     n_steps = int(round((n_days - 1) / dt)) + 1
     if abs((n_steps - 1) * dt - (n_days - 1)) > 1e-10:
         raise ValueError("dt must divide the daily observation interval exactly.")
+    # The causal kernel is normalized to unit one-sided mass.  These are exactly the
+    # sufficient simplex-preservation step restrictions from the manuscript with kappa_+=1.
+    if dt * gamma > 1.0 + 1e-12 or dt * beta > 1.0 + 1e-12:
+        raise ValueError("Parameters violate the manuscript positivity step conditions: dt*gamma<=1 and dt*beta<=1.")
     kernel, _ = hartley_causal_kernel(dt, n_steps, mu=mu, omega=omega)
     s = np.empty(n_steps, dtype=float)
     i = np.empty(n_steps, dtype=float)
@@ -165,9 +174,9 @@ def simulate_hartley_memory(
 def fit_hartley_memory(
     df: pd.DataFrame,
     population: int = POPULATION,
-    dt: float = 0.1,
-    mu: float = 0.5,
-    omega: float = 2.0,
+    dt: float = MEMORY_DT_DAYS,
+    mu: float = MEMORY_MU,
+    omega: float = MEMORY_OMEGA,
 ) -> FitResult:
     """Fit beta and gamma only; mu and omega are fixed to the manuscript illustration values."""
     obs = df.in_bed.to_numpy(float)
@@ -195,6 +204,92 @@ def fit_hartley_memory(
     rmse, mae = metrics(pred, obs)
     return FitResult(float(beta), float(gamma), rmse, mae, pred)
 
+
+
+def poisson_kernel_chi(xi: np.ndarray | float, *, h: float, chi: float) -> np.ndarray:
+    xi = np.asarray(xi, float)
+    return (1.0 - chi**2) / (1.0 - 2.0 * chi * np.cos(h * xi) + chi**2)
+
+
+def hartley_multiplier_closed_form(
+    y: np.ndarray | float,
+    *,
+    h: float = MEMORY_DT_DAYS,
+    mu: float = MEMORY_MU,
+    omega: float = MEMORY_OMEGA,
+    alpha: float = 1.0,
+) -> np.ndarray:
+    """Closed form of Eq. (3.58) for the two-sided Hartley kernel."""
+    y = np.asarray(y, float)
+    chi = float(np.exp(-mu * h))
+    return alpha * h * (
+        poisson_kernel_chi(y, h=h, chi=chi)
+        + poisson_kernel_chi(omega - y, h=h, chi=chi) / np.sqrt(2.0)
+    )
+
+
+def even_cosine_multiplier_closed_form(
+    y: np.ndarray | float,
+    *,
+    h: float = MEMORY_DT_DAYS,
+    mu: float = MEMORY_MU,
+    omega: float = MEMORY_OMEGA,
+    alpha: float = 1.0,
+) -> np.ndarray:
+    """Closed form of the even cosine comparison multiplier, Eq. (3.62)."""
+    y = np.asarray(y, float)
+    chi = float(np.exp(-mu * h))
+    return alpha * h * (
+        poisson_kernel_chi(y, h=h, chi=chi)
+        + 0.5 * poisson_kernel_chi(omega - y, h=h, chi=chi)
+        + 0.5 * poisson_kernel_chi(omega + y, h=h, chi=chi)
+    )
+
+
+def hartley_multiplier_direct_sum(
+    y: np.ndarray | float,
+    *,
+    h: float = MEMORY_DT_DAYS,
+    mu: float = MEMORY_MU,
+    omega: float = MEMORY_OMEGA,
+    alpha: float = 1.0,
+    n_cut: int = 20000,
+) -> np.ndarray:
+    """Direct finite Hartley sum used to numerically verify Eq. (3.58)."""
+    y_arr = np.atleast_1d(np.asarray(y, float))
+    n = np.arange(-int(n_cut), int(n_cut) + 1, dtype=float)
+    t = n * h
+    cas_omega = np.cos(omega * t) + np.sin(omega * t)
+    kernel = alpha * np.exp(-mu * np.abs(t)) * (1.0 + cas_omega / np.sqrt(2.0))
+    out = np.empty_like(y_arr)
+    for j, yy in enumerate(y_arr):
+        cas_y = np.cos(t * yy) + np.sin(t * yy)
+        out[j] = h * float(np.dot(kernel, cas_y))
+    return out if np.ndim(y) else out[0]
+
+
+def hartley_spectral_verification(
+    *,
+    h: float = MEMORY_DT_DAYS,
+    mu: float = MEMORY_MU,
+    omega: float = MEMORY_OMEGA,
+    alpha: float = 1.0,
+    n_cut: int = 20000,
+    grid_size: int = 200001,
+) -> dict[str, object]:
+    """Reproduce the numerical multiplier checks reported in Section 4.3."""
+    test_y = np.linspace(-0.75 * np.pi / h, 0.75 * np.pi / h, 6)
+    direct = hartley_multiplier_direct_sum(test_y, h=h, mu=mu, omega=omega, alpha=alpha, n_cut=n_cut)
+    closed = hartley_multiplier_closed_form(test_y, h=h, mu=mu, omega=omega, alpha=alpha)
+    grid = np.linspace(-np.pi / h, np.pi / h, int(grid_size))
+    vals = hartley_multiplier_closed_form(grid, h=h, mu=mu, omega=omega, alpha=alpha)
+    vals_neg = hartley_multiplier_closed_form(-grid, h=h, mu=mu, omega=omega, alpha=alpha)
+    return {
+        "test_frequencies": test_y.tolist(),
+        "max_direct_sum_abs_error": float(np.max(np.abs(direct - closed))),
+        "max_frequency_asymmetry": float(np.max(np.abs(vals - vals_neg))),
+        "max_multiplier": float(np.max(vals)),
+    }
 
 def result_table(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, FitResult]]:
     fixed = paper_sir_baseline(df)

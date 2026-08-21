@@ -2,253 +2,304 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
 
 import numpy as np
 import pandas as pd
-from scipy import io as spio
-from scipy import signal
+from scipy import optimize, signal
 
-PAPER_NATURAL_FREQUENCIES_HZ = np.array([30.70, 54.20], dtype=float)
-PAPER_TC_EQ6_FREQUENCIES_HZ = np.array([30.8230, 54.1016], dtype=float)
+RWTH_EXPECTED_COLUMNS = ("Time", "Acc_0", "Acc_1", "Acc_2", "Disp_0", "Disp_1", "Disp_2")
+RWTH_EXPECTED_DT = 0.003
+RWTH_EXPECTED_SAMPLES = 40131
+RWTH_NPERSEG = 4096
+RWTH_BAND_HZ = (0.2, 50.0)
+
+# Values printed in the final manuscript. They are comparison targets, not hard-coded outputs.
+RWTH_MANUSCRIPT_TARGETS = {
+    "dominant_response_frequency_hz": 3.2552,
+    "acceleration_transfer_norm": 12.6212,
+    "displacement_transfer_norm": 18.1514,
+    "transmissibility_coherence": 0.9970,
+}
 
 
 @dataclass(frozen=True)
-class MechanicalRecord:
-    force: np.ndarray
-    base_accel: np.ndarray
-    floor1_accel: np.ndarray
-    floor2_accel: np.ndarray
-    floor3_accel: np.ndarray
-    fs: float = 320.0
+class RWTHRecord:
+    time: np.ndarray
+    acc_table: np.ndarray
+    acc_floor1: np.ndarray
+    acc_floor2: np.ndarray
+    disp_table: np.ndarray
+    disp_floor1: np.ndarray
+    disp_floor2: np.ndarray
 
     @property
     def n_samples(self) -> int:
-        return int(self.force.size)
+        return int(self.time.size)
 
-    def as_matrix(self) -> np.ndarray:
-        return np.column_stack(
-            [self.force, self.base_accel, self.floor1_accel, self.floor2_accel, self.floor3_accel]
-        )
+    @property
+    def dt(self) -> float:
+        return float(np.median(np.diff(self.time)))
 
-
-def _orient_five_channels(a: np.ndarray) -> np.ndarray:
-    a = np.asarray(a, dtype=float)
-    if a.ndim != 2:
-        raise ValueError(f"Expected a 2-D numeric array, got shape {a.shape}.")
-    if a.shape[1] == 5:
-        out = a
-    elif a.shape[0] == 5:
-        out = a.T
-    elif a.shape[1] > 5:
-        # Some mirrors append metadata columns. Use the first five only when samples are rows.
-        out = a[:, :5]
-    elif a.shape[0] > 5 and a.shape[1] < 5:
-        raise ValueError(f"Array has fewer than five channels: {a.shape}.")
-    else:
-        raise ValueError(f"Could not orient a five-channel record from shape {a.shape}.")
-    if out.shape[0] < 512:
-        raise ValueError(f"Record is too short for spectral estimation: {out.shape[0]} samples.")
-    if not np.isfinite(out).all():
-        raise ValueError("Record contains NaN or infinite values.")
-    return out
+    @property
+    def fs(self) -> float:
+        return 1.0 / self.dt
 
 
-def load_lanl_record(path: str | Path, fs: float = 320.0) -> MechanicalRecord:
-    """Load one five-channel LANL nonlinear-frame realization.
-
-    Accepted formats: CSV, TXT/DAT, NPY, NPZ, MAT. The expected channel order is
-    force, base acceleration, floor-1, floor-2, floor-3 acceleration.
-    """
+def load_rwth_white_noise_csv(path: str | Path) -> RWTHRecord:
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(path)
-    ext = path.suffix.lower()
-    if ext == ".csv":
-        # First try numeric CSV with or without a header.
-        try:
-            frame = pd.read_csv(path)
-            numeric = frame.select_dtypes(include=[np.number]).to_numpy()
-            if numeric.shape[1] < 5:
-                raise ValueError
-            a = numeric
-        except Exception:
-            a = np.loadtxt(path, delimiter=",")
-    elif ext in {".txt", ".dat"}:
-        try:
-            a = np.loadtxt(path)
-        except ValueError:
-            a = np.loadtxt(path, delimiter=",")
-    elif ext == ".npy":
-        a = np.load(path)
-    elif ext == ".npz":
-        with np.load(path) as z:
-            keys = list(z.keys())
-            if not keys:
-                raise ValueError(f"No arrays in {path}.")
-            a = z[keys[0]]
-    elif ext == ".mat":
-        raw = spio.loadmat(path)
-        candidates = []
-        for key, value in raw.items():
-            if key.startswith("__") or not isinstance(value, np.ndarray) or value.ndim != 2:
-                continue
-            if 5 in value.shape or value.shape[1] >= 5:
-                candidates.append(value)
-        if not candidates:
-            raise ValueError("No suitable 2-D five-channel numeric array found in MAT file.")
-        # Prefer the array with the largest number of elements.
-        a = max(candidates, key=lambda x: x.size)
-    else:
-        raise ValueError(f"Unsupported LANL record extension: {ext}")
+    df = pd.read_csv(path, sep=None, engine="python")
+    normalized = {str(c).strip().lower(): c for c in df.columns}
+    missing = [c for c in RWTH_EXPECTED_COLUMNS if c.lower() not in normalized]
+    if missing:
+        raise ValueError(f"RWTH CSV is missing columns: {missing}; found {list(df.columns)}")
 
-    a = _orient_five_channels(a)
-    return MechanicalRecord(*(a[:, i].astype(float) for i in range(5)), fs=float(fs))
+    arrays = {c: df[normalized[c.lower()]].to_numpy(float) for c in RWTH_EXPECTED_COLUMNS}
+    matrix = np.column_stack([arrays[c] for c in RWTH_EXPECTED_COLUMNS])
+    if not np.isfinite(matrix).all():
+        raise ValueError("RWTH record contains NaN or infinite values.")
+    if len(matrix) < RWTH_NPERSEG:
+        raise ValueError(f"RWTH record is too short: {len(matrix)} samples.")
+    if np.any(np.diff(arrays["Time"]) <= 0):
+        raise ValueError("RWTH time column must be strictly increasing.")
+
+    record = RWTHRecord(
+        time=arrays["Time"],
+        acc_table=arrays["Acc_0"],
+        acc_floor1=arrays["Acc_1"],
+        acc_floor2=arrays["Acc_2"],
+        disp_table=arrays["Disp_0"],
+        disp_floor1=arrays["Disp_1"],
+        disp_floor2=arrays["Disp_2"],
+    )
+    if not np.isclose(record.dt, RWTH_EXPECTED_DT, rtol=0.0, atol=5e-7):
+        raise ValueError(f"Unexpected RWTH time step {record.dt:.9g} s; expected about {RWTH_EXPECTED_DT} s.")
+    return record
 
 
-def generate_synthetic_lanl_fixture(
-    n_samples: int = 8192,
-    fs: float = 320.0,
+def generate_synthetic_rwth_fixture(
+    n_samples: int = 40131,
+    dt: float = 0.003,
     seed: int = 20260821,
-) -> MechanicalRecord:
-    """Generate a deterministic *synthetic* five-channel CI fixture.
-
-    It imitates two resonances near the published LANL natural frequencies. It is only
-    for unit/smoke tests and must never be reported as measured LANL data.
-    """
+) -> RWTHRecord:
+    """Deterministic CI fixture only. Never used by the default real-data run."""
     rng = np.random.default_rng(seed)
-    force = rng.normal(size=n_samples)
+    fs = 1.0 / dt
+    x = rng.normal(size=n_samples)
 
-    def resonant(x: np.ndarray, f0: float, q: float) -> np.ndarray:
+    def resonant(sig: np.ndarray, f0: float, q: float) -> np.ndarray:
         b, a = signal.iirpeak(f0, q, fs=fs)
-        return signal.lfilter(b, a, x)
+        return signal.lfilter(b, a, sig)
 
-    r1 = resonant(force, 30.70, 24.0)
-    r2 = resonant(force, 54.20, 28.0)
-    eps = lambda scale: scale * rng.normal(size=n_samples)
-    base = 0.35 * r1 + 0.20 * r2 + 0.02 * force + eps(0.005)
-    f1 = 0.65 * r1 + 0.45 * r2 + 0.01 * force + eps(0.005)
-    f2 = 1.00 * r1 + 0.80 * r2 + eps(0.005)
-    f3 = 1.35 * r1 + 1.25 * r2 + eps(0.005)
-    return MechanicalRecord(force, base, f1, f2, f3, fs=fs)
+    r1 = resonant(x, 3.2552, 20.0)
+    r2 = resonant(x, 8.6, 18.0)
+    acc1 = 5.0 * r1 + 1.0 * r2 + 0.05 * x
+    acc2 = 10.0 * r1 + 1.7 * r2 + 0.04 * x
+
+    # Separate displacement fixture with the same dominant mode. This is only for CI.
+    xd = signal.lfilter(*signal.butter(2, 12.0, fs=fs), x)
+    d1 = 7.0 * resonant(xd, 3.2552, 20.0) + 0.05 * xd
+    d2 = 14.0 * resonant(xd, 3.2552, 20.0) + 0.05 * xd
+    t = dt * np.arange(n_samples)
+    return RWTHRecord(t, x, acc1, acc2, xd, d1, d2)
 
 
-def _spectral_args(n: int, nperseg: int | None) -> tuple[int, int]:
-    if nperseg is None:
-        nperseg = min(2048, n)
+def _spectral_args(n: int, nperseg: int = RWTH_NPERSEG) -> tuple[int, int]:
     nperseg = int(min(max(128, nperseg), n))
-    noverlap = nperseg // 2
-    return nperseg, noverlap
+    return nperseg, nperseg // 2
 
 
-def welch_h1_frf(
-    force: np.ndarray,
+def h1_frf(
+    excitation: np.ndarray,
     response: np.ndarray,
     fs: float,
-    nperseg: int | None = None,
+    nperseg: int = RWTH_NPERSEG,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """H1 FRF estimate H1 = S_yx/S_xx using Welch-averaged spectra."""
-    force = signal.detrend(np.asarray(force, float), type="constant")
-    response = signal.detrend(np.asarray(response, float), type="constant")
-    nperseg, noverlap = _spectral_args(len(force), nperseg)
-    f, pxx = signal.welch(force, fs=fs, window="hann", nperseg=nperseg, noverlap=noverlap)
-    _, pyx = signal.csd(force, response, fs=fs, window="hann", nperseg=nperseg, noverlap=noverlap)
-    _, pyy = signal.welch(response, fs=fs, window="hann", nperseg=nperseg, noverlap=noverlap)
-    eps = np.finfo(float).eps
-    h1 = pyx / np.maximum(pxx, eps)
-    coherence = np.abs(pyx) ** 2 / np.maximum(pxx * pyy, eps)
-    return f, h1, np.clip(np.real(coherence), 0.0, 1.0)
+    """Welch/H1 estimate H1=S_yx/S_xx and input-output magnitude-squared coherence."""
+    x = signal.detrend(np.asarray(excitation, float), type="constant")
+    y = signal.detrend(np.asarray(response, float), type="constant")
+    if x.shape != y.shape:
+        raise ValueError("Excitation and response must have the same shape.")
+    nperseg, noverlap = _spectral_args(len(x), nperseg)
+    kwargs = dict(fs=fs, window="hann", nperseg=nperseg, noverlap=noverlap, detrend=False)
+    f, sxx = signal.welch(x, **kwargs)
+    _, syx = signal.csd(x, y, **kwargs)
+    _, syy = signal.welch(y, **kwargs)
+    eps = np.finfo(float).tiny
+    h1 = syx / np.maximum(sxx, eps)
+    coh = np.abs(syx) ** 2 / np.maximum(sxx * syy, eps)
+    return f, h1, np.clip(np.real(coh), 0.0, 1.0)
 
 
-def zhou_transmissibility_eq6(
-    xi: np.ndarray,
-    xj: np.ndarray,
+def transmissibility_coherence(
+    floor1: np.ndarray,
+    floor2: np.ndarray,
     fs: float,
-    nperseg: int | None = None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Reproduce the two-point transmissibility indicator in Zhou et al. (2017), Eq. (6).
+    nperseg: int = RWTH_NPERSEG,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Two-response transmissibility coherence |G12|^2/(G11 G22).
 
-    The paper defines T1(i,j)=Gij/Gjj and T2(i,j)=Gii/Gji, and the frequency
-    extraction function is 1/(T2-T1). This implementation computes those spectral
-    estimators directly using Welch-averaged auto/cross spectra.
+    This is the coherence quantity paired with the floor-to-floor transmissibility
+    calculation used in the manuscript's RWTH summary.
     """
-    xi = signal.detrend(np.asarray(xi, float), type="constant")
-    xj = signal.detrend(np.asarray(xj, float), type="constant")
-    if xi.shape != xj.shape:
-        raise ValueError("xi and xj must have the same length.")
-    nperseg, noverlap = _spectral_args(len(xi), nperseg)
-    f, gii = signal.welch(xi, fs=fs, window="hann", nperseg=nperseg, noverlap=noverlap)
-    _, gjj = signal.welch(xj, fs=fs, window="hann", nperseg=nperseg, noverlap=noverlap)
-    # scipy.csd(xj, xi) = conj(Xj) Xi, matching G_ij under the usual convention.
-    _, gij = signal.csd(xj, xi, fs=fs, window="hann", nperseg=nperseg, noverlap=noverlap)
-    gji = np.conjugate(gij)
-    eps = 1e-14 * max(1.0, float(np.nanmax(gii)), float(np.nanmax(gjj)))
-    t1 = gij / (gjj + eps)
-    t2 = gii / (gji + eps)
-    denom = t2 - t1
-    indicator = np.zeros_like(denom, dtype=complex)
-    mask = np.abs(denom) > eps
-    indicator[mask] = 1.0 / denom[mask]
-    tc = np.abs(gij) ** 2 / np.maximum(gii * gjj, eps)
-    return f, indicator, np.clip(np.real(tc), 0.0, 1.0)
+    x1 = signal.detrend(np.asarray(floor1, float), type="constant")
+    x2 = signal.detrend(np.asarray(floor2, float), type="constant")
+    if x1.shape != x2.shape:
+        raise ValueError("Floor signals must have the same shape.")
+    nperseg, noverlap = _spectral_args(len(x1), nperseg)
+    kwargs = dict(fs=fs, window="hann", nperseg=nperseg, noverlap=noverlap, detrend=False)
+    f, g11 = signal.welch(x1, **kwargs)
+    _, g22 = signal.welch(x2, **kwargs)
+    _, g12 = signal.csd(x1, x2, **kwargs)
+    eps = np.finfo(float).tiny
+    coh = np.abs(g12) ** 2 / np.maximum(g11 * g22, eps)
+    return f, np.clip(np.real(coh), 0.0, 1.0)
 
 
-def peak_candidates(
-    f: np.ndarray,
-    magnitude: np.ndarray,
-    band: tuple[float, float] = (20.0, 80.0),
-    prominence_fraction: float = 0.03,
-    min_distance_hz: float = 1.0,
-) -> np.ndarray:
-    f = np.asarray(f, float)
-    mag = np.asarray(magnitude, float)
-    mask = (f >= band[0]) & (f <= band[1]) & np.isfinite(mag)
-    fb = f[mask]
-    mb = mag[mask]
-    if fb.size < 3 or np.nanmax(mb) <= 0:
-        return np.array([], dtype=float)
-    df = float(np.median(np.diff(fb)))
-    distance = max(1, int(round(min_distance_hz / max(df, 1e-12))))
-    peaks, _ = signal.find_peaks(
-        mb,
-        prominence=max(np.nanmax(mb) * prominence_fraction, np.finfo(float).eps),
-        distance=distance,
-    )
-    return fb[peaks]
+def multi_floor_transfer(
+    table_signal: np.ndarray,
+    floor1: np.ndarray,
+    floor2: np.ndarray,
+    fs: float,
+    nperseg: int = RWTH_NPERSEG,
+) -> dict[str, np.ndarray]:
+    f, h1_1, coh1 = h1_frf(table_signal, floor1, fs, nperseg)
+    f2, h1_2, coh2 = h1_frf(table_signal, floor2, fs, nperseg)
+    if not np.array_equal(f, f2):
+        raise RuntimeError("Inconsistent Welch frequency grids.")
+    norm = np.sqrt(np.abs(h1_1) ** 2 + np.abs(h1_2) ** 2)
+    return {"frequency_hz": f, "floor1_h1": h1_1, "floor2_h1": h1_2, "norm": norm, "coh1": coh1, "coh2": coh2}
 
 
-def nearest_reference_peaks(candidates: Iterable[float], references: Iterable[float]) -> np.ndarray:
-    cand = np.asarray(list(candidates), float)
-    refs = np.asarray(list(references), float)
-    if cand.size == 0:
-        return np.full(refs.shape, np.nan)
-    chosen = []
-    available = list(cand)
-    for ref in refs:
-        idx = int(np.argmin(np.abs(np.asarray(available) - ref)))
-        chosen.append(float(available.pop(idx)))
-        if not available:
-            available = list(cand)
-    return np.asarray(chosen)
+def analyze_rwth_record(
+    record: RWTHRecord,
+    *,
+    nperseg: int = RWTH_NPERSEG,
+    band_hz: tuple[float, float] = RWTH_BAND_HZ,
+) -> dict[str, object]:
+    """Compute the manuscript RWTH summary from table input and two floor responses."""
+    acc = multi_floor_transfer(record.acc_table, record.acc_floor1, record.acc_floor2, record.fs, nperseg)
+    disp = multi_floor_transfer(record.disp_table, record.disp_floor1, record.disp_floor2, record.fs, nperseg)
+    f = np.asarray(acc["frequency_hz"])
+    fd = np.asarray(disp["frequency_hz"])
+    if not np.array_equal(f, fd):
+        raise RuntimeError("Acceleration/displacement frequency grids differ.")
+    mask = (f >= band_hz[0]) & (f <= band_hz[1])
+    if not np.any(mask):
+        raise ValueError("Requested frequency band has no Welch bins.")
+    band_indices = np.flatnonzero(mask)
+    acc_norm = np.asarray(acc["norm"], float)
+    disp_norm = np.asarray(disp["norm"], float)
+    idx_acc = int(band_indices[np.nanargmax(acc_norm[mask])])
+    idx_disp = int(band_indices[np.nanargmax(disp_norm[mask])])
 
+    fc, tc = transmissibility_coherence(record.acc_floor1, record.acc_floor2, record.fs, nperseg)
+    if not np.array_equal(f, fc):
+        raise RuntimeError("Coherence frequency grid differs from H1 grid.")
 
-def analyze_record(record: MechanicalRecord) -> dict[str, object]:
-    """Compute a standard H1 FRF and the Zhou et al. two-point Eq.(6) baseline."""
-    f, h1, coh = welch_h1_frf(record.force, record.floor3_accel, record.fs)
-    ft, fun, tc = zhou_transmissibility_eq6(record.floor3_accel, record.base_accel, record.fs)
-    h1_peaks = peak_candidates(f, np.abs(h1))
-    tc_peaks = peak_candidates(ft, np.abs(fun), prominence_fraction=0.01)
-    h1_sel = nearest_reference_peaks(h1_peaks, PAPER_NATURAL_FREQUENCIES_HZ)
-    tc_sel = nearest_reference_peaks(tc_peaks, PAPER_NATURAL_FREQUENCIES_HZ)
-    return {
-        "frequency_hz": f,
-        "h1": h1,
-        "h1_coherence": coh,
-        "tc_frequency_hz": ft,
-        "tc_indicator": fun,
-        "tc_coherence": tc,
-        "h1_candidates_hz": h1_peaks,
-        "tc_candidates_hz": tc_peaks,
-        "h1_selected_hz": h1_sel,
-        "tc_selected_hz": tc_sel,
+    summary = {
+        "dominant_response_frequency_hz": float(f[idx_acc]),
+        "acceleration_transfer_norm": float(acc_norm[idx_acc]),
+        "displacement_transfer_norm": float(disp_norm[idx_disp]),
+        "displacement_peak_frequency_hz": float(f[idx_disp]),
+        "transmissibility_coherence": float(tc[idx_acc]),
+        "floor1_input_coherence_at_dominant": float(np.asarray(acc["coh1"])[idx_acc]),
+        "floor2_input_coherence_at_dominant": float(np.asarray(acc["coh2"])[idx_acc]),
     }
+    return {"summary": summary, "acceleration": acc, "displacement": disp, "transmissibility_coherence_curve": tc}
+
+
+# ---------- Analytical NN/NNN numbers printed in Section 4.1 ----------
+
+def lambda_hat_2(theta: np.ndarray | float, k0: float, k1: float, k2: float) -> np.ndarray:
+    theta = np.asarray(theta, float)
+    return k0 + 4.0 * k1 * np.sin(theta / 2.0) ** 2 + 4.0 * k2 * np.sin(theta) ** 2
+
+
+def nn_nnn_band_edge(zeta: float, *, k0: float = 0.36, k1: float = 1.0, m: float = 1.0) -> dict[str, float | None]:
+    k2 = float(zeta) * k1
+    if k2 <= k1 / 4.0:
+        theta_star = None
+        lambda_max = k0 + 4.0 * k1
+    else:
+        theta_star = float(np.arccos(-k1 / (4.0 * k2)))
+        lambda_max = k0 + 2.0 * k1 + 4.0 * k2 + k1**2 / (4.0 * k2)
+    return {
+        "zeta": float(zeta),
+        "lambda_min": float(k0),
+        "lambda_max": float(lambda_max),
+        "omega_max": float(np.sqrt(lambda_max / m)),
+        "theta_star": theta_star,
+    }
+
+
+def group_velocity(theta: float, zeta: float, *, h: float = 1.0, k0: float = 0.36, k1: float = 1.0, m: float = 1.0) -> float:
+    k2 = zeta * k1
+    lam = float(lambda_hat_2(theta, k0, k1, k2))
+    omega = np.sqrt(lam / m)
+    return float(h * np.sin(theta) * (k1 + 4.0 * k2 * np.cos(theta)) / (m * omega))
+
+
+def exact_gain(omega: np.ndarray | float, *, m: float, c: float, k0: float, lambda_max: float) -> np.ndarray:
+    omega = np.asarray(omega, float)
+    x = m * omega**2
+    d = np.where(x < k0, k0 - x, np.where(x > lambda_max, x - lambda_max, 0.0))
+    return 1.0 / np.sqrt(d**2 + (c * omega) ** 2)
+
+
+def isolation_required_k0(
+    omega_a: float,
+    omega_b: float,
+    *,
+    m: float = 1.0,
+    c: float = 0.08,
+    gain_tol: float = 2.0,
+) -> float:
+    if not 0 < omega_a <= omega_b:
+        raise ValueError("Require 0 < omega_a <= omega_b.")
+
+    def requirement(omega: float) -> float:
+        rad = max(gain_tol ** -2 - (c * omega) ** 2, 0.0)
+        return m * omega**2 + np.sqrt(rad)
+
+    result = optimize.minimize_scalar(lambda w: -requirement(w), bounds=(omega_a, omega_b), method="bounded")
+    candidates = [requirement(omega_a), requirement(omega_b), requirement(float(result.x))]
+    return float(max(candidates))
+
+
+def max_gain_interval(
+    omega_a: float,
+    omega_b: float,
+    *,
+    m: float,
+    c: float,
+    k0: float,
+    lambda_max: float,
+) -> float:
+    result = optimize.minimize_scalar(
+        lambda w: -float(exact_gain(w, m=m, c=c, k0=k0, lambda_max=lambda_max)),
+        bounds=(omega_a, omega_b),
+        method="bounded",
+        options={"xatol": 1e-14},
+    )
+    vals = [
+        float(exact_gain(omega_a, m=m, c=c, k0=k0, lambda_max=lambda_max)),
+        float(exact_gain(omega_b, m=m, c=c, k0=k0, lambda_max=lambda_max)),
+        float(exact_gain(float(result.x), m=m, c=c, k0=k0, lambda_max=lambda_max)),
+    ]
+    return max(vals)
+
+
+def manuscript_lattice_numbers() -> dict[str, object]:
+    zetas = [0.10, 0.25, 0.40, 0.50, 0.70]
+    bands = [nn_nnn_band_edge(z) for z in zetas]
+    vg = {"zeta_0.10": group_velocity(2.5, 0.10), "zeta_0.50": group_velocity(2.5, 0.50)}
+    k0_req = isolation_required_k0(0.35, 0.50)
+    lam036 = nn_nnn_band_edge(0.50, k0=0.36)["lambda_max"]
+    lam080 = nn_nnn_band_edge(0.50, k0=0.80)["lambda_max"]
+    gains = {
+        "k0_0.36": max_gain_interval(0.35, 0.50, m=1.0, c=0.08, k0=0.36, lambda_max=float(lam036)),
+        "k0_0.80": max_gain_interval(0.35, 0.50, m=1.0, c=0.08, k0=0.80, lambda_max=float(lam080)),
+    }
+    return {"band_edges": bands, "group_velocity_theta_2.5": vg, "required_k0": k0_req, "max_gains": gains}

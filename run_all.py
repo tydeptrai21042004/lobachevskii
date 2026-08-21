@@ -13,24 +13,24 @@ ROOT = Path(__file__).resolve().parent
 def run(cmd: list[str]) -> None:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(ROOT / "src") + os.pathsep + env.get("PYTHONPATH", "")
-    print("+", " ".join(cmd), flush=True)
+    print("+", " ".join(map(str, cmd)), flush=True)
     subprocess.run(cmd, cwd=ROOT, env=env, check=True)
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run the three real-data manuscript applications.")
-    parser.add_argument("--refresh-data", action="store_true", help="Redownload all automatically fetched datasets.")
-    parser.add_argument("--lanl-file", type=Path, default=None, help="Optional existing LANL five-channel record.")
-    parser.add_argument("--lanl-dataset-url", default=None, help="Optional direct LANL archive URL if official hosting changes.")
+    parser = argparse.ArgumentParser(description="Run the three real-data applications in the final manuscript.")
+    parser.add_argument("--refresh-data", action="store_true", help="Redownload automatically fetched datasets.")
+    parser.add_argument("--rwth-file", type=Path, default=None, help="Optional existing LP02_Whitenoise_001.csv.")
+    parser.add_argument("--rwth-dataset-url", default=None, help="Optional direct RWTH Data_v1.0.0.zip URL.")
     parser.add_argument("--run-tests", action="store_true", help="Run unit tests after the three applications.")
     args = parser.parse_args()
 
     common = ["--refresh-data"] if args.refresh_data else []
-    mechanical = [sys.executable, "scripts/run_mechanical_lanl.py", *common]
-    if args.lanl_file is not None:
-        mechanical += ["--lanl-file", str(args.lanl_file)]
-    if args.lanl_dataset_url:
-        mechanical += ["--dataset-url", args.lanl_dataset_url]
+    mechanical = [sys.executable, "scripts/run_mechanical_rwth.py", *common]
+    if args.rwth_file is not None:
+        mechanical += ["--rwth-file", str(args.rwth_file)]
+    if args.rwth_dataset_url:
+        mechanical += ["--dataset-url", args.rwth_dataset_url]
 
     run(mechanical)
     run([sys.executable, "scripts/run_graph_etex.py", *common])
